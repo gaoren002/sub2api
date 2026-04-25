@@ -126,6 +126,14 @@
           :show-now-when-idle="true"
           color="emerald"
         />
+        <UsageProgressBar
+          v-if="usageInfo?.openai_images"
+          label="Img"
+          :utilization="usageInfo.openai_images.utilization"
+          :resets-at="usageInfo.openai_images.resets_at"
+          :show-now-when-idle="true"
+          color="purple"
+        />
       </div>
       <div v-else-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
@@ -525,7 +533,7 @@ const geminiUsageAvailable = computed(() => {
 
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
-  return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
+  return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day || !!usageInfo.value?.openai_images
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))

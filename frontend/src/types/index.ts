@@ -891,6 +891,7 @@ export interface AccountUsageInfo {
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null
   seven_day_sonnet: UsageProgress | null
+  openai_images?: UsageProgress | null
   gemini_shared_daily?: UsageProgress | null
   gemini_pro_daily?: UsageProgress | null
   gemini_flash_daily?: UsageProgress | null
@@ -943,6 +944,11 @@ export interface CodexUsageSnapshot {
   codex_7d_window_minutes?: number // 7d window in minutes (should be ~10080)
 
   codex_usage_updated_at?: string // Last update timestamp
+
+  openai_images_quota_exhausted?: boolean // OpenAI/Codex image-generation sub-quota exhausted
+  openai_images_quota_used_percent?: number // Image-generation sub-quota usage percentage
+  openai_images_quota_reset_at?: string // Image-generation sub-quota reset time (RFC3339)
+  openai_images_quota_updated_at?: string // Last image-generation quota update timestamp
 }
 
 export type OpenAICompactMode = 'auto' | 'force_on' | 'force_off'

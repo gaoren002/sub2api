@@ -1058,6 +1058,16 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 	}
 }
 
+func (a *Account) IsOpenAIImagesQuotaExhausted(now time.Time) bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	if resetAt := a.getExtraTime("openai_images_quota_reset_at"); !resetAt.IsZero() && now.Before(resetAt) {
+		return a.getExtraBool("openai_images_quota_exhausted") || a.getExtraFloat64("openai_images_quota_used_percent") >= 100
+	}
+	return false
+}
+
 func (a *Account) GetChatGPTUserID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""

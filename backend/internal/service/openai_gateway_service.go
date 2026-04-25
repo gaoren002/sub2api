@@ -124,6 +124,11 @@ type NormalizedCodexLimits struct {
 	Window7dMinutes *int
 }
 
+type OpenAIImagesQuotaSignal struct {
+	Exhausted bool
+	ResetAt   *time.Time
+}
+
 // Normalize converts primary/secondary fields to canonical 5h/7d fields.
 // Strategy: Compare window_minutes to determine which is 5h vs 7d.
 // Returns nil if snapshot is nil or has no useful data.
@@ -1943,6 +1948,7 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	s.markOpenAIImagesQuotaFromError(ctx, account, resp.StatusCode, resp.Header, body)
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
 
@@ -5271,6 +5277,87 @@ func ParseCodexRateLimitHeaders(headers http.Header) *OpenAICodexUsageSnapshot {
 
 	snapshot.UpdatedAt = time.Now().Format(time.RFC3339)
 	return snapshot
+}
+
+func ParseOpenAIImagesQuotaSignal(statusCode int, headers http.Header, body []byte, fallbackNow time.Time) *OpenAIImagesQuotaSignal {
+	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusForbidden && statusCode != http.StatusPaymentRequired {
+		return nil
+	}
+	lowerCode := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body)))
+	lowerMsg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
+	combined := lowerCode + " " + lowerMsg
+	if !strings.Contains(combined, "image") {
+		return nil
+	}
+	exhaustedMarkers := []string{"quota", "limit", "exhaust", "insufficient", "usage_limit_reached", "rate_limit_exceeded"}
+	exhausted := false
+	for _, marker := range exhaustedMarkers {
+		if strings.Contains(combined, marker) {
+			exhausted = true
+			break
+		}
+	}
+	if !exhausted {
+		return nil
+	}
+	var resetAt *time.Time
+	if resetUnix := parseOpenAIRateLimitResetTime(body); resetUnix != nil {
+		parsed := time.Unix(*resetUnix, 0)
+		resetAt = &parsed
+	} else if retryAfter := strings.TrimSpace(headers.Get("Retry-After")); retryAfter != "" {
+		if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+			base := fallbackNow
+			if base.IsZero() {
+				base = time.Now()
+			}
+			parsed := base.Add(time.Duration(seconds) * time.Second)
+			resetAt = &parsed
+		}
+	}
+	return &OpenAIImagesQuotaSignal{Exhausted: true, ResetAt: resetAt}
+}
+
+func buildOpenAIImagesQuotaExtraUpdates(signal *OpenAIImagesQuotaSignal, fallbackNow time.Time) map[string]any {
+	if signal == nil || !signal.Exhausted {
+		return nil
+	}
+	now := fallbackNow
+	if now.IsZero() {
+		now = time.Now()
+	}
+	resetAt := now.Add(24 * time.Hour)
+	if signal.ResetAt != nil && signal.ResetAt.After(now) {
+		resetAt = *signal.ResetAt
+	}
+	return map[string]any{
+		"openai_images_quota_exhausted":    true,
+		"openai_images_quota_used_percent": 100.0,
+		"openai_images_quota_reset_at":     resetAt.UTC().Format(time.RFC3339),
+		"openai_images_quota_updated_at":   now.UTC().Format(time.RFC3339),
+	}
+}
+
+func (s *OpenAIGatewayService) updateOpenAIImagesQuotaSignal(ctx context.Context, accountID int64, signal *OpenAIImagesQuotaSignal) {
+	if s == nil || s.accountRepo == nil || accountID <= 0 || signal == nil || !signal.Exhausted {
+		return
+	}
+	updates := buildOpenAIImagesQuotaExtraUpdates(signal, time.Now())
+	if len(updates) == 0 {
+		return
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, accountID, updates); err != nil {
+		logger.FromContext(ctx).Warn("openai.images_quota_update_failed", zap.Int64("account_id", accountID), zap.Error(err))
+	}
+}
+
+func (s *OpenAIGatewayService) markOpenAIImagesQuotaFromError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte) {
+	if account == nil || !account.IsOpenAI() {
+		return
+	}
+	if signal := ParseOpenAIImagesQuotaSignal(statusCode, headers, body, time.Now()); signal != nil && signal.Exhausted {
+		s.updateOpenAIImagesQuotaSignal(ctx, account.ID, signal)
+		mergeAccountExtra(account, buildOpenAIImagesQuotaExtraUpdates(signal, time.Now()))
+	}
 }
 
 func codexSnapshotBaseTime(snapshot *OpenAICodexUsageSnapshot, fallback time.Time) time.Time {

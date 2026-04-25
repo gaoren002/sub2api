@@ -1073,6 +1073,13 @@ func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	require.Equal(t, "You are a coding assistant.", instructions)
 }
 
+func TestIsOpenAIResponsesImageGenerationRequest(t *testing.T) {
+	require.False(t, IsOpenAIResponsesImageGenerationRequest([]byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation"}]}`)))
+	require.True(t, IsOpenAIResponsesImageGenerationRequest([]byte(`{"model":"gpt-5.4","tool_choice":{"type":"image_generation"}}`)))
+	require.False(t, IsOpenAIResponsesImageGenerationRequest([]byte(`{"model":"gpt-5.4","tools":[{"type":"web_search"}]}`)))
+	require.False(t, IsOpenAIResponsesImageGenerationRequest([]byte(`not-json`)))
+}
+
 func TestIsInstructionsEmpty(t *testing.T) {
 	tests := []struct {
 		name     string
