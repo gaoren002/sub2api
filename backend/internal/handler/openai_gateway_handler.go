@@ -239,6 +239,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	requireCompact := isOpenAIRemoteCompactPath(c)
+	requiredImageCapability := service.OpenAIImagesCapability("")
+	if service.IsOpenAIResponsesImageGenerationRequest(body) {
+		requiredImageCapability = service.OpenAIImagesCapabilityNative
+	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -249,7 +253,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	for {
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForResponses(
 			c.Request.Context(),
 			apiKey.GroupID,
 			previousResponseID,
@@ -258,6 +262,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			requireCompact,
+			requiredImageCapability,
 		)
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",

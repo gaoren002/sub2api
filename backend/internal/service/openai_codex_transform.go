@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 var codexModelMap = map[string]string{
@@ -461,6 +463,18 @@ func hasOpenAIImageGenerationTool(reqBody map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// IsOpenAIResponsesImageGenerationRequest reports whether a raw Responses body
+// explicitly chooses image_generation for this request. A Codex coding request
+// may declare image_generation in tools as an available capability without
+// actually using image generation, so tools[] alone must not trigger image-quota
+// scheduling.
+func IsOpenAIResponsesImageGenerationRequest(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	return gjson.GetBytes(body, "tool_choice.type").String() == "image_generation"
 }
 
 func hasOpenAIInputImage(reqBody map[string]any) bool {

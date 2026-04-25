@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -256,6 +257,19 @@ func TestAccountSupportsOpenAIImageCapability_OAuthSupportsNative(t *testing.T) 
 
 	require.True(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic))
 	require.True(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityNative))
+}
+
+func TestParseOpenAIImagesQuotaSignal(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"error":{"code":"usage_limit_reached","message":"Image generation quota exhausted","type":"usage_limit_reached","resets_at":1770000000}}`)
+	signal := ParseOpenAIImagesQuotaSignal(http.StatusTooManyRequests, http.Header{}, body, now)
+	require.NotNil(t, signal)
+	require.True(t, signal.Exhausted)
+	require.NotNil(t, signal.ResetAt)
+	require.Equal(t, int64(1770000000), signal.ResetAt.Unix())
+
+	nonImageBody := []byte(`{"error":{"code":"usage_limit_reached","message":"Codex weekly limit reached"}}`)
+	require.Nil(t, ParseOpenAIImagesQuotaSignal(http.StatusTooManyRequests, http.Header{}, nonImageBody, now))
 }
 
 type openAIImageTestSSEEvent struct {

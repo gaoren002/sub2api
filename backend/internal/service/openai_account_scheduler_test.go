@@ -634,6 +634,56 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSticky(
 	}
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForResponses_SkipsPreviousResponseWhenImageQuotaExhausted(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(9)
+	now := time.Now()
+	exhausted := Account{
+		ID:          1101,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 2,
+		Extra: map[string]any{
+			"openai_images_quota_exhausted":    true,
+			"openai_images_quota_used_percent": 100.0,
+			"openai_images_quota_reset_at":     now.Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	fresh := Account{
+		ID:          1102,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 2,
+	}
+	cache := &schedulerTestGatewayCache{}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = 3600
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{exhausted, fresh}},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_image", exhausted.ID, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForResponses(ctx, &groupID, "resp_prev_image", "session_hash_image", "gpt-5.4", nil, OpenAIUpstreamTransportAny, false, OpenAIImagesCapabilityNative)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, fresh.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickyPreviousHit)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10)
@@ -675,6 +725,52 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky(t *testin
 	require.Equal(t, account.ID, selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
 	require.True(t, decision.StickySessionHit)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_SkipsExhaustedImageQuota(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10)
+	now := time.Now()
+	exhausted := Account{
+		ID:          2201,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Extra: map[string]any{
+			"openai_images_quota_exhausted":    true,
+			"openai_images_quota_used_percent": 100.0,
+			"openai_images_quota_reset_at":     now.Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	fresh := Account{
+		ID:          2202,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:image_session": exhausted.ID}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{exhausted, fresh}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImages(ctx, &groupID, "image_session", "gpt-image-2", nil, OpenAIImagesCapabilityNative)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, fresh.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickySessionHit)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

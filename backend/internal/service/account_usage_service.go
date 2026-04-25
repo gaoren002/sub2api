@@ -183,6 +183,7 @@ type UsageInfo struct {
 	FiveHour           *UsageProgress `json:"five_hour"`                      // 5小时窗口
 	SevenDay           *UsageProgress `json:"seven_day,omitempty"`            // 7天窗口
 	SevenDaySonnet     *UsageProgress `json:"seven_day_sonnet,omitempty"`     // 7天Sonnet窗口
+	OpenAIImages       *UsageProgress `json:"openai_images,omitempty"`        // OpenAI/Codex 生图子额度
 	GeminiSharedDaily  *UsageProgress `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
 	GeminiProDaily     *UsageProgress `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
 	GeminiFlashDaily   *UsageProgress `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
@@ -506,6 +507,11 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
 		usage.SevenDay = progress
 	}
+	if progress := buildOpenAIImagesQuotaProgressFromExtra(account.Extra, now); progress != nil {
+		usage.OpenAIImages = progress
+	} else {
+		usage.OpenAIImages = &UsageProgress{Utilization: 0}
+	}
 
 	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
@@ -541,6 +547,50 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	return usage, nil
+}
+
+func buildOpenAIImagesQuotaProgressFromExtra(extra map[string]any, now time.Time) *UsageProgress {
+	if len(extra) == 0 {
+		return nil
+	}
+	usedRaw, ok := extra["openai_images_quota_used_percent"]
+	if !ok {
+		if exhausted, ok := extra["openai_images_quota_exhausted"]; !ok || !parseExtraBool(exhausted) {
+			return nil
+		}
+	}
+	progress := &UsageProgress{Utilization: parseExtraFloat64(usedRaw)}
+	if progress.Utilization <= 0 && parseExtraBool(extra["openai_images_quota_exhausted"]) {
+		progress.Utilization = 100
+	}
+	if resetAtRaw, ok := extra["openai_images_quota_reset_at"]; ok {
+		if resetAt, err := parseTime(fmt.Sprint(resetAtRaw)); err == nil {
+			progress.ResetsAt = &resetAt
+			progress.RemainingSeconds = int(resetAt.Sub(now).Seconds())
+			if progress.RemainingSeconds < 0 {
+				progress.RemainingSeconds = 0
+			}
+		}
+	}
+	if progress.ResetsAt != nil && !now.Before(*progress.ResetsAt) {
+		progress.Utilization = 0
+	}
+	return progress
+}
+
+func parseExtraBool(v any) bool {
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true") || strings.TrimSpace(value) == "1"
+	case float64:
+		return value != 0
+	case int:
+		return value != 0
+	default:
+		return false
+	}
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {

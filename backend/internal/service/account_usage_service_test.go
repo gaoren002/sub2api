@@ -207,3 +207,28 @@ func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildOpenAIImagesQuotaProgressFromExtra(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	extra := map[string]any{
+		"openai_images_quota_exhausted":    true,
+		"openai_images_quota_used_percent": 100.0,
+		"openai_images_quota_reset_at":     now.Add(2 * time.Hour).Format(time.RFC3339),
+	}
+	progress := buildOpenAIImagesQuotaProgressFromExtra(extra, now)
+	if progress == nil {
+		t.Fatal("expected non-nil progress")
+	}
+	if progress.Utilization != 100.0 {
+		t.Fatalf("expected Utilization=100, got %v", progress.Utilization)
+	}
+	if progress.RemainingSeconds <= 0 {
+		t.Fatalf("expected positive RemainingSeconds, got %v", progress.RemainingSeconds)
+	}
+
+	extra["openai_images_quota_reset_at"] = now.Add(-time.Hour).Format(time.RFC3339)
+	progress = buildOpenAIImagesQuotaProgressFromExtra(extra, now)
+	if progress == nil || progress.Utilization != 0 {
+		t.Fatalf("expected expired image quota to reset to 0, got %#v", progress)
+	}
+}
