@@ -1289,8 +1289,12 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 
-	// 使用默认的错误映射
+	// 使用默认状态/类型映射，但优先把可解析的上游错误消息返回给下游，
+	// 避免用户只看到“Upstream service temporarily unavailable”这类通用文案。
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
+	if upstreamMsg != "" {
+		errMsg = upstreamMsg
+	}
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 

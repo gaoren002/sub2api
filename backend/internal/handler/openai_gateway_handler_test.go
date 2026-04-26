@@ -796,3 +796,21 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 	router.GET("/openai/v1/responses", h.ResponsesWebSocket)
 	return httptest.NewServer(router)
 }
+
+func TestOpenAIFailoverExhausted_ReturnsUpstreamMessageByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"type":"server_error","message":"upstream model overloaded: retry after 30s"}}`),
+	}
+
+	h := &OpenAIGatewayHandler{}
+	h.handleFailoverExhausted(c, failoverErr, false)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.JSONEq(t, `{"error":{"type":"upstream_error","message":"upstream model overloaded: retry after 30s"}}`, w.Body.String())
+}
