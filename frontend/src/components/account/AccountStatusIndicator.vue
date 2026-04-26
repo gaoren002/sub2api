@@ -133,6 +133,31 @@
       </div>
     </div>
 
+    <!-- OpenAI image-generation sub-quota indicator -->
+    <div v-if="imageQuotaStatus" class="group relative">
+      <span
+        :class="[
+          'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium',
+          imageQuotaStatus.exhausted
+            ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+            : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+        ]"
+      >
+        <Icon name="exclamationTriangle" size="xs" :stroke-width="2" />
+        Img
+        <span v-if="imageQuotaStatus.exhausted" class="text-[10px] opacity-70">{{ imageQuotaStatus.resetText }}</span>
+        <span v-else class="text-[10px] opacity-70">{{ imageQuotaStatus.usedText }}</span>
+      </span>
+      <div
+        class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-60 -translate-x-1/2 whitespace-normal rounded bg-gray-900 px-3 py-2 text-center text-xs leading-relaxed text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+      >
+        {{ imageQuotaStatus.tooltip }}
+        <div
+          class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-900 dark:border-t-gray-700"
+        ></div>
+      </div>
+    </div>
+
     <!-- Overload Indicator (529) -->
     <div v-if="isOverloaded" class="group relative">
       <span
@@ -183,6 +208,13 @@ type AccountModelStatusItem = {
   reset_at: string
 }
 
+type ImageQuotaStatus = {
+  exhausted: boolean
+  usedText: string
+  resetText: string
+  tooltip: string
+}
+
 // Computed: active model statuses (普通模型限流 + 积分耗尽 + 走积分中)
 const activeModelStatuses = computed<AccountModelStatusItem[]>(() => {
   const extra = props.account.extra as Record<string, unknown> | undefined
@@ -215,6 +247,45 @@ const activeModelStatuses = computed<AccountModelStatusItem[]>(() => {
   }
 
   return items
+})
+
+const parseNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+const parseBool = (value: unknown): boolean => value === true || value === 'true' || value === 1 || value === '1'
+
+const imageQuotaStatus = computed<ImageQuotaStatus | null>(() => {
+  if (props.account.platform !== 'openai') return null
+  const extra = props.account.extra as Record<string, unknown> | undefined
+  if (!extra) return null
+
+  const resetRaw = extra.openai_images_quota_reset_at
+  const resetAt = typeof resetRaw === 'string' && resetRaw.trim() !== '' ? resetRaw : ''
+  const resetActive = resetAt !== '' && new Date(resetAt) > new Date()
+  const used = parseNumber(extra.openai_images_quota_used_percent)
+  const exhausted = parseBool(extra.openai_images_quota_exhausted) && resetActive
+
+  if (!exhausted && used == null) return null
+
+  const safeUsed = Math.max(0, Math.min(100, used ?? (exhausted ? 100 : 0)))
+  const usedText = `${Math.round(safeUsed)}%`
+  const resetText = resetActive ? formatModelResetTime(resetAt) : ''
+  const resetLabel = resetAt ? formatTime(resetAt) : ''
+
+  return {
+    exhausted,
+    usedText,
+    resetText,
+    tooltip: exhausted
+      ? `图片额度已限流${resetLabel ? `，预计 ${resetLabel} 恢复` : ''}`
+      : `图片额度使用率 ${usedText}${resetLabel ? `，重置时间 ${resetLabel}` : ''}`,
+  }
 })
 
 const formatScopeName = (scope: string): string => {

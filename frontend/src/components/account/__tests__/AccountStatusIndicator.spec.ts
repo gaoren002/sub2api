@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AccountStatusIndicator from '../AccountStatusIndicator.vue'
 import type { Account } from '@/types'
@@ -11,6 +11,23 @@ vi.mock('vue-i18n', async () => {
       t: (key: string) => key
     })
   }
+})
+
+vi.mock('@/utils/format', () => ({
+  formatCountdown: () => '1h',
+  formatCountdownWithSuffix: () => '1h',
+  formatDateTime: (value: string | null) => value ?? '',
+  formatTime: (value: string | null) => value ?? '',
+}))
+
+beforeEach(() => {
+  const store = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+    removeItem: (key: string) => store.delete(key),
+    clear: () => store.clear(),
+  })
 })
 
 function makeAccount(overrides: Partial<Account>): Account {
@@ -158,5 +175,54 @@ describe('AccountStatusIndicator', () => {
     expect(wrapper.text()).not.toContain('⚡')
     // AICredits 积分耗尽状态应显示
     expect(wrapper.text()).toContain('admin.accounts.status.creditsExhausted')
+  })
+
+  it('OpenAI 图片额度限流单独显示 Img 子状态', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 5,
+          name: 'openai-1',
+          platform: 'openai',
+          extra: {
+            openai_images_quota_exhausted: true,
+            openai_images_quota_used_percent: 100,
+            openai_images_quota_reset_at: '2099-03-15T00:00:00Z'
+          }
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('Img')
+    expect(wrapper.text()).not.toContain('429')
+  })
+
+  it('OpenAI 图片额度未耗尽时可单独查看使用率', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 6,
+          name: 'openai-2',
+          platform: 'openai',
+          extra: {
+            openai_images_quota_used_percent: 67,
+            openai_images_quota_reset_at: '2099-03-15T00:00:00Z'
+          }
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('Img')
+    expect(wrapper.text()).toContain('67%')
   })
 })
