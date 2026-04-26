@@ -545,7 +545,7 @@ func (s *OpenAIGatewayService) recordOpenAIImagesResponsesError(
 	}
 	appendOpsUpstreamError(c, event)
 
-	if signal := ParseOpenAIImagesQuotaSignal(http.StatusTooManyRequests, http.Header{}, payload, time.Now()); signal != nil && signal.Exhausted && account != nil {
+	if signal := ParseOpenAIImagesQuotaSignalForImageRequest(http.StatusTooManyRequests, http.Header{}, payload, time.Now()); signal != nil && signal.Exhausted && account != nil {
 		s.updateOpenAIImagesQuotaSignal(ctx, account.ID, signal)
 		mergeAccountExtra(account, buildOpenAIImagesQuotaExtraUpdates(signal, time.Now()))
 	}
@@ -880,6 +880,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
+			if signal := ParseOpenAIImagesQuotaSignalForImageRequest(resp.StatusCode, resp.Header, respBody, time.Now()); signal != nil && signal.Exhausted {
+				s.updateOpenAIImagesQuotaSignal(ctx, account.ID, signal)
+				mergeAccountExtra(account, buildOpenAIImagesQuotaExtraUpdates(signal, time.Now()))
+			}
 			s.handleFailoverSideEffects(ctx, resp, account)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,

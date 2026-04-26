@@ -5280,13 +5280,21 @@ func ParseCodexRateLimitHeaders(headers http.Header) *OpenAICodexUsageSnapshot {
 }
 
 func ParseOpenAIImagesQuotaSignal(statusCode int, headers http.Header, body []byte, fallbackNow time.Time) *OpenAIImagesQuotaSignal {
+	return parseOpenAIImagesQuotaSignal(statusCode, headers, body, fallbackNow, true)
+}
+
+func ParseOpenAIImagesQuotaSignalForImageRequest(statusCode int, headers http.Header, body []byte, fallbackNow time.Time) *OpenAIImagesQuotaSignal {
+	return parseOpenAIImagesQuotaSignal(statusCode, headers, body, fallbackNow, false)
+}
+
+func parseOpenAIImagesQuotaSignal(statusCode int, headers http.Header, body []byte, fallbackNow time.Time, requireImageMarker bool) *OpenAIImagesQuotaSignal {
 	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusForbidden && statusCode != http.StatusPaymentRequired {
 		return nil
 	}
 	lowerCode := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body)))
 	lowerMsg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
 	combined := lowerCode + " " + lowerMsg
-	if !strings.Contains(combined, "image") {
+	if requireImageMarker && !strings.Contains(combined, "image") {
 		return nil
 	}
 	exhaustedMarkers := []string{"quota", "limit", "exhaust", "insufficient", "usage_limit_reached", "rate_limit_exceeded"}

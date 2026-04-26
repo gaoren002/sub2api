@@ -270,6 +270,14 @@ func TestParseOpenAIImagesQuotaSignal(t *testing.T) {
 
 	nonImageBody := []byte(`{"error":{"code":"usage_limit_reached","message":"Codex weekly limit reached"}}`)
 	require.Nil(t, ParseOpenAIImagesQuotaSignal(http.StatusTooManyRequests, http.Header{}, nonImageBody, now))
+	require.NotNil(t, ParseOpenAIImagesQuotaSignalForImageRequest(http.StatusTooManyRequests, http.Header{}, nonImageBody, now))
+
+	usageLimitBody := []byte(`{"error":{"message":"The usage limit has been reached"}}`)
+	require.Nil(t, ParseOpenAIImagesQuotaSignal(http.StatusTooManyRequests, http.Header{}, usageLimitBody, now))
+	require.NotNil(t, ParseOpenAIImagesQuotaSignalForImageRequest(http.StatusTooManyRequests, http.Header{}, usageLimitBody, now))
+
+	tooManyRequestsBody := []byte(`{"error":{"message":"Too many requests"}}`)
+	require.Nil(t, ParseOpenAIImagesQuotaSignal(http.StatusTooManyRequests, http.Header{}, tooManyRequestsBody, now))
 }
 
 type openAIImageTestSSEEvent struct {
