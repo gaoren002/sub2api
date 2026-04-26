@@ -136,5 +136,5 @@ func TestGatewayFailoverExhausted_ReturnsUpstreamMessageByDefault(t *testing.T) 
 	h.handleFailoverExhausted(c, failoverErr, service.PlatformAnthropic, false)
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	require.JSONEq(t, `{"type":"error","error":{"type":"upstream_error","message":"image quota exhausted for this account"}}`, w.Body.String())
+	require.JSONEq(t, `{"type":"error","error":{"type":"invalid_request_error","message":"image quota exhausted for this account"}}`, w.Body.String())
 }

@@ -812,5 +812,5 @@ func TestOpenAIFailoverExhausted_ReturnsUpstreamMessageByDefault(t *testing.T) {
 	h.handleFailoverExhausted(c, failoverErr, false)
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	require.JSONEq(t, `{"error":{"type":"upstream_error","message":"upstream model overloaded: retry after 30s"}}`, w.Body.String())
+	require.JSONEq(t, `{"error":{"type":"server_error","message":"upstream model overloaded: retry after 30s"}}`, w.Body.String())
 }
