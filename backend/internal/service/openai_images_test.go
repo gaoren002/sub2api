@@ -459,6 +459,88 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *tes
 	require.False(t, gjson.Get(completed.Data, "revised_prompt").Exists())
 }
 
+func TestOpenAIGatewayServiceForwardImages_OAuthStreamingRecordsResponseFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","stream":true}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"text/event-stream"},
+				"X-Request-Id": []string{"req_img_failed"},
+			},
+			Body: io.NopCloser(strings.NewReader(
+				`data: {"type":"response.failed","response":{"error":{"type":"server_error","message":"image worker failed"}}}` + "\n\n" +
+					"data: [DONE]\n\n",
+			)),
+		},
+	}
+	svc.httpUpstream = upstream
+
+	account := &Account{ID: 2, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "token-123"}}
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "image worker failed")
+	require.Equal(t, http.StatusBadGateway, c.GetInt(OpsUpstreamStatusCodeKey))
+	msg, _ := c.Get(OpsUpstreamErrorMessageKey)
+	require.Equal(t, "image worker failed", msg)
+	detail, _ := c.Get(OpsUpstreamErrorDetailKey)
+	require.Contains(t, detail, "response.failed")
+	require.Contains(t, rec.Body.String(), "image worker failed")
+}
+
+func TestOpenAIGatewayServiceForwardImages_OAuthStreamingMarksImageQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","stream":true}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	updatesCh := make(chan map[string]any, 1)
+	svc := &OpenAIGatewayService{accountRepo: &snapshotUpdateAccountRepo{updateExtraCalls: updatesCh}}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(
+				`data: {"type":"response.failed","response":{"error":{"type":"rate_limit_error","code":"usage_limit_reached","message":"Image generation quota exhausted"}}}` + "\n\n",
+			)),
+		},
+	}
+	svc.httpUpstream = upstream
+
+	account := &Account{ID: 7, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "token-123"}}
+	_, err = svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.Error(t, err)
+
+	select {
+	case updates := <-updatesCh:
+		require.Equal(t, true, updates["openai_images_quota_exhausted"])
+		require.Equal(t, 100.0, updates["openai_images_quota_used_percent"])
+	case <-time.After(time.Second):
+		t.Fatal("expected image quota update")
+	}
+	require.Equal(t, true, account.Extra["openai_images_quota_exhausted"])
+}
+
 func TestOpenAIGatewayServiceForwardImages_OAuthEditsMultipartUsesResponsesAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
