@@ -644,6 +644,7 @@ const {
     platform: '',
     type: '',
     status: '',
+    image_quota: '',
     privacy_mode: '',
     group: '',
     search: '',
@@ -1224,6 +1225,7 @@ const buildAccountQueryFilters = () => ({
   platform: params.platform || '',
   type: params.type || '',
   status: params.status || '',
+  image_quota: params.image_quota || '',
   group: params.group || '',
   privacy_mode: params.privacy_mode || '',
   search: params.search || '',
@@ -1252,6 +1254,12 @@ const accountMatchesCurrentFilters = (account: Account) => {
     } else if (account.status !== filters.status) {
       return false
     }
+  }
+  if (filters.image_quota === 'exhausted') {
+    const extra = account.extra as Record<string, unknown> | undefined
+    const imageQuotaExhausted = extra?.openai_images_quota_exhausted === true || extra?.openai_images_quota_exhausted === 'true'
+    const imageQuotaResetAt = typeof extra?.openai_images_quota_reset_at === 'string' ? new Date(extra.openai_images_quota_reset_at).getTime() : Number.NaN
+    if (!imageQuotaExhausted || !Number.isFinite(imageQuotaResetAt) || imageQuotaResetAt <= Date.now()) return false
   }
   if (filters.group) {
     const groupIds = account.group_ids ?? account.groups?.map((group) => group.id) ?? []

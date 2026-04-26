@@ -2637,6 +2637,7 @@ export default {
       allPlatforms: '全部平台',
       allTypes: '全部类型',
       allStatus: '全部状态',
+      allImageQuota: '全部图片额度',
       allGroups: '全部分组',
       ungroupedGroup: '未分配分组',
       oauthType: 'OAuth',
@@ -2774,6 +2775,9 @@ export default {
         upstreamDesc: '通过 Base URL + API Key 连接上游',
         api_key: 'API Key',
         cookie: 'Cookie'
+      },
+      imageQuota: {
+        exhausted: '图片额度耗尽'
       },
       status: {
         active: '正常',

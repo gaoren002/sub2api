@@ -2558,6 +2558,7 @@ export default {
       allPlatforms: 'All Platforms',
       allTypes: 'All Types',
       allStatus: 'All Status',
+      allImageQuota: 'All Image Quota',
       allGroups: 'All Groups',
       ungroupedGroup: 'Ungrouped',
       oauthType: 'OAuth',
@@ -2587,6 +2588,9 @@ export default {
         antigravityApikey: 'Connect via Base URL + API Key',
         upstream: 'Upstream',
         upstreamDesc: 'Connect via Base URL + API Key'
+      },
+      imageQuota: {
+        exhausted: 'Image Quota Exhausted'
       },
       status: {
         active: 'Active',
