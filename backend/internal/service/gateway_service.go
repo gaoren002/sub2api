@@ -6440,6 +6440,21 @@ func ExtractUpstreamErrorMessage(body []byte) string {
 	return extractUpstreamErrorMessage(body)
 }
 
+// ExtractUpstreamErrorType extracts structured upstream error type when present.
+func ExtractUpstreamErrorType(body []byte) string {
+	return extractUpstreamErrorType(body)
+}
+
+// ExtractUpstreamErrorCode extracts structured upstream error code when present.
+func ExtractUpstreamErrorCode(body []byte) (any, bool) {
+	return extractUpstreamErrorField(body, "code")
+}
+
+// ExtractUpstreamErrorParam extracts structured upstream error param when present.
+func ExtractUpstreamErrorParam(body []byte) (any, bool) {
+	return extractUpstreamErrorField(body, "param")
+}
+
 func extractUpstreamErrorMessage(body []byte) string {
 	// Claude 风格：{"type":"error","error":{"type":"...","message":"..."}}
 	if m := gjson.GetBytes(body, "error.message").String(); strings.TrimSpace(m) != "" {
@@ -6460,6 +6475,70 @@ func extractUpstreamErrorMessage(body []byte) string {
 
 	// 兜底：尝试顶层 message
 	return gjson.GetBytes(body, "message").String()
+}
+
+func extractUpstreamErrorField(body []byte, field string) (any, bool) {
+	path := "error." + field
+	if v := gjson.GetBytes(body, path); v.Exists() {
+		return gjsonResultValue(v), true
+	}
+
+	inner := strings.TrimSpace(gjson.GetBytes(body, "error.message").String())
+	if !strings.HasPrefix(inner, "{") {
+		return nil, false
+	}
+
+	if v := gjson.Get(inner, path); v.Exists() {
+		return gjsonResultValue(v), true
+	}
+
+	if lastBrace := strings.LastIndex(inner, "}"); lastBrace >= 0 {
+		if v := gjson.Get(inner[:lastBrace+1], path); v.Exists() {
+			return gjsonResultValue(v), true
+		}
+	}
+
+	return nil, false
+}
+
+func gjsonResultValue(v gjson.Result) any {
+	switch v.Type {
+	case gjson.Null:
+		return nil
+	case gjson.True:
+		return true
+	case gjson.False:
+		return false
+	case gjson.Number:
+		return v.Value()
+	case gjson.JSON:
+		return v.Value()
+	default:
+		return v.String()
+	}
+}
+
+func extractUpstreamErrorType(body []byte) string {
+	if errType := strings.TrimSpace(gjson.GetBytes(body, "error.type").String()); errType != "" {
+		return errType
+	}
+
+	inner := strings.TrimSpace(gjson.GetBytes(body, "error.message").String())
+	if !strings.HasPrefix(inner, "{") {
+		return ""
+	}
+
+	if errType := strings.TrimSpace(gjson.Get(inner, "error.type").String()); errType != "" {
+		return errType
+	}
+
+	if lastBrace := strings.LastIndex(inner, "}"); lastBrace >= 0 {
+		if errType := strings.TrimSpace(gjson.Get(inner[:lastBrace+1], "error.type").String()); errType != "" {
+			return errType
+		}
+	}
+
+	return ""
 }
 
 func extractUpstreamErrorCode(body []byte) string {

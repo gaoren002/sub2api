@@ -1478,7 +1478,11 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
 
-			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+			errType := "upstream_error"
+			if upstreamType := service.ExtractUpstreamErrorType(responseBody); upstreamType != "" {
+				errType = upstreamType
+			}
+			h.handleStreamingAwareOpenAIError(c, respCode, errType, msg, responseBody, streamStarted)
 			return
 		}
 	}
@@ -1487,9 +1491,19 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 
-	// 使用默认的错误映射
+	// 使用默认状态/类型映射，但优先把可解析的上游错误消息返回给下游，
+	// 避免用户只看到“Upstream service temporarily unavailable”这类通用文案。
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	if upstreamType := service.ExtractUpstreamErrorType(responseBody); upstreamType != "" {
+		errType = upstreamType
+		if statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden && statusCode != http.StatusTooManyRequests {
+			status = statusCode
+		}
+	}
+	if upstreamMsg != "" {
+		errMsg = upstreamMsg
+	}
+	h.handleStreamingAwareOpenAIError(c, status, errType, errMsg, responseBody, streamStarted)
 }
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
@@ -1517,6 +1531,33 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 }
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
+func (h *OpenAIGatewayHandler) handleStreamingAwareOpenAIError(c *gin.Context, status int, errType, message string, responseBody []byte, streamStarted bool) {
+	errorObj := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	if code, ok := service.ExtractUpstreamErrorCode(responseBody); ok {
+		errorObj["code"] = code
+	}
+	if param, ok := service.ExtractUpstreamErrorParam(responseBody); ok {
+		errorObj["param"] = param
+	}
+
+	if streamStarted {
+		flusher, ok := c.Writer.(http.Flusher)
+		if ok {
+			payload, _ := json.Marshal(gin.H{"error": errorObj})
+			if _, err := fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload); err != nil {
+				_ = c.Error(err)
+			}
+			flusher.Flush()
+		}
+		return
+	}
+
+	c.JSON(status, gin.H{"error": errorObj})
+}
+
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
 		// Stream already started, send error as SSE event then close

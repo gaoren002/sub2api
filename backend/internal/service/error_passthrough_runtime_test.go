@@ -62,13 +62,13 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 	assert.Equal(t, "Upstream request failed", errField["message"])
 }
 
-func TestOpenAIHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
+func TestOpenAIHandleErrorResponse_PreservesStructuredUserError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
 	svc := &OpenAIGatewayService{}
-	respBody := []byte(`{"error":{"message":"Invalid schema for field messages"}}`)
+	respBody := []byte(`{"error":{"code":null,"message":"Item with id 'rs_0c6a545ab19f86ee0169edb4bc4fac8193a6ebafee677d84a2' not found. Items are not persisted when ` + "`" + `store` + "`" + ` is set to false. Try again with ` + "`" + `store` + "`" + ` set to true, or remove this item from your input.","param":"input","type":"invalid_request_error"}}`)
 	resp := &http.Response{
 		StatusCode: http.StatusUnprocessableEntity,
 		Body:       io.NopCloser(bytes.NewReader(respBody)),
@@ -78,14 +78,16 @@ func TestOpenAIHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 
 	_, err := svc.handleErrorResponse(context.Background(), resp, c, account, nil)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "upstream_error", errField["type"])
-	assert.Equal(t, "Upstream request failed", errField["message"])
+	assert.Equal(t, "invalid_request_error", errField["type"])
+	assert.Equal(t, nil, errField["code"])
+	assert.Equal(t, "input", errField["param"])
+	assert.Contains(t, errField["message"], "Items are not persisted")
 }
 
 func TestGeminiWriteGeminiMappedError_NoRuleKeepsDefault(t *testing.T) {
