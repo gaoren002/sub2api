@@ -689,6 +689,20 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 	return statusCode, errType, clientMessage, upstreamMessage, true
 }
 
+func writeOpenAIErrorResponse(c *gin.Context, statusCode int, errType, message string, responseBody []byte) {
+	errorObj := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	if code, ok := ExtractUpstreamErrorCode(responseBody); ok {
+		errorObj["code"] = code
+	}
+	if param, ok := ExtractUpstreamErrorParam(responseBody); ok {
+		errorObj["param"] = param
+	}
+	c.JSON(statusCode, gin.H{"error": errorObj})
+}
+
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
@@ -3713,12 +3727,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
-		c.JSON(status, gin.H{
-			"error": gin.H{
-				"type":    errType,
-				"message": errMsg,
-			},
-		})
+		writeOpenAIErrorResponse(c, status, errType, errMsg, body)
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}
@@ -3779,7 +3788,8 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		}
 	}
 
-	// Return appropriate error response
+	// Return appropriate error response. Preserve structured upstream user errors so clients
+	// can see invalid_request_error/code/param instead of a generic upstream_error wrapper.
 	var errType, errMsg string
 	var statusCode int
 
@@ -3805,13 +3815,17 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		errType = "upstream_error"
 		errMsg = "Upstream request failed"
 	}
+	if upstreamType := ExtractUpstreamErrorType(body); upstreamType != "" {
+		errType = upstreamType
+		if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+			statusCode = resp.StatusCode
+		}
+	}
+	if upstreamMsg != "" {
+		errMsg = upstreamMsg
+	}
 
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": errMsg,
-		},
-	})
+	writeOpenAIErrorResponse(c, statusCode, errType, errMsg, body)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)

@@ -796,3 +796,39 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 	router.GET("/openai/v1/responses", h.ResponsesWebSocket)
 	return httptest.NewServer(router)
 }
+
+func TestOpenAIFailoverExhausted_ReturnsUpstreamMessageByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"code":"invalid_value","type":"server_error","message":"upstream model overloaded: retry after 30s","param":"tools"}}`),
+	}
+
+	h := &OpenAIGatewayHandler{}
+	h.handleFailoverExhausted(c, failoverErr, false)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.JSONEq(t, `{"error":{"code":"invalid_value","type":"server_error","message":"upstream model overloaded: retry after 30s","param":"tools"}}`, w.Body.String())
+}
+
+func TestOpenAIFailoverExhausted_PreservesNullCodeAndParam(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusBadRequest,
+		ResponseBody: []byte(`{"error":{"code":null,"message":"No tool call found for function call output with call_id fcaa415ff5cd0c.","param":"input","type":"invalid_request_error"}}`),
+	}
+
+	h := &OpenAIGatewayHandler{}
+	h.handleFailoverExhausted(c, failoverErr, false)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.JSONEq(t, `{"error":{"code":null,"message":"No tool call found for function call output with call_id fcaa415ff5cd0c.","param":"input","type":"invalid_request_error"}}`, w.Body.String())
+}

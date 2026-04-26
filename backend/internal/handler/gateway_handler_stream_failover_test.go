@@ -120,3 +120,21 @@ func TestStreamWrittenGuard_NoByteWritten_GuardNotTriggered(t *testing.T) {
 	require.False(t, guardTriggered,
 		"未写入任何字节时，守卫条件必须为 false，应允许正常 failover 继续")
 }
+
+func TestGatewayFailoverExhausted_ReturnsUpstreamMessageByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: []byte(`{"error":{"type":"invalid_request_error","message":"upstream validation failed"}}`),
+	}
+
+	h := &GatewayHandler{}
+	h.handleFailoverExhausted(c, failoverErr, service.PlatformAnthropic, false)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.JSONEq(t, `{"type":"error","error":{"type":"invalid_request_error","message":"upstream validation failed"}}`, w.Body.String())
+}
