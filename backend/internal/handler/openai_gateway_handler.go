@@ -1496,8 +1496,8 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	if upstreamType := service.ExtractUpstreamErrorType(responseBody); upstreamType != "" {
 		errType = upstreamType
-		if statusCode == http.StatusBadRequest {
-			status = http.StatusBadRequest
+		if statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden && statusCode != http.StatusTooManyRequests {
+			status = statusCode
 		}
 	}
 	if upstreamMsg != "" {
