@@ -539,7 +539,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
+			s.reconcileOpenAI429State(ctx, account, resp.Header, body, testModelID)
 		}
 		// 401 Unauthorized: 标记账号为永久错误
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
@@ -651,7 +651,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 		// 探测如返回 429,主动同步限流状态,避免后续短时间内继续选中。
 		if resp.StatusCode == http.StatusTooManyRequests {
-			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
+			s.reconcileOpenAI429State(ctx, account, resp.Header, body, testModelID)
 		}
 	}
 
@@ -668,36 +668,77 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	return nil
 }
 
-func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, account *Account, headers http.Header, body []byte) {
+func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, account *Account, headers http.Header, body []byte, requestedModel string) {
 	if s == nil || s.accountRepo == nil || account == nil {
+		return
+	}
+
+	resetUnix, scopeGlobal, recognized := parseOpenAIRateLimitResetTime(body)
+	if recognized && scopeGlobal {
+		s.reconcileOpenAIAccountRateLimitState(ctx, account, openAIUsageLimitResetTime(resetUnix))
 		return
 	}
 
 	var resetAt *time.Time
 	if calculated := calculateOpenAI429ResetTime(headers); calculated != nil {
 		resetAt = calculated
-	} else if unixTs := parseOpenAIRateLimitResetTime(body); unixTs != nil {
-		t := time.Unix(*unixTs, 0)
-		resetAt = &t
+	} else if recognized {
+		if resetUnix != nil {
+			resetTime := time.Unix(*resetUnix, 0)
+			resetAt = &resetTime
+		} else {
+			resetTime := time.Now().Add(rateLimitFallbackCooldown)
+			resetAt = &resetTime
+		}
 	}
 	if resetAt == nil {
 		return
 	}
 
-	if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+	scope := openAIRateLimitScopeForModel(requestedModel)
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, scope, *resetAt); err != nil {
 		return
 	}
+	mergeAccountModelRateLimit(account, scope, *resetAt)
+	s.clearOpenAIStaleErrorAfterRateLimitReconcile(ctx, account)
+}
 
+func (s *AccountTestService) reconcileOpenAIAccountRateLimitState(ctx context.Context, account *Account, resetAt time.Time) {
+	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+		return
+	}
 	now := time.Now()
 	account.RateLimitedAt = &now
-	account.RateLimitResetAt = resetAt
+	account.RateLimitResetAt = &resetAt
+	s.clearOpenAIStaleErrorAfterRateLimitReconcile(ctx, account)
+}
 
+func (s *AccountTestService) clearOpenAIStaleErrorAfterRateLimitReconcile(ctx context.Context, account *Account) {
 	if account.Status == StatusError {
 		if err := s.accountRepo.ClearError(ctx, account.ID); err != nil {
 			return
 		}
 		account.Status = StatusActive
 		account.ErrorMessage = ""
+	}
+}
+
+func mergeAccountModelRateLimit(account *Account, scope string, resetAt time.Time) {
+	if account == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = make(map[string]any)
+	}
+	limits, _ := account.Extra[modelRateLimitsKey].(map[string]any)
+	if limits == nil {
+		limits = make(map[string]any)
+		account.Extra[modelRateLimitsKey] = limits
+	}
+	now := time.Now().UTC()
+	limits[scope] = map[string]any{
+		"rate_limited_at":     now.Format(time.RFC3339),
+		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -1270,6 +1311,9 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			s.reconcileOpenAI429State(ctx, account, resp.Header, body, modelID)
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
@@ -1368,6 +1412,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			s.reconcileOpenAI429State(ctx, account, resp.Header, body, modelID)
+		}
 		message := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if message == "" {
 			message = fmt.Sprintf("Responses API returned %d", resp.StatusCode)

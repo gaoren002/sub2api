@@ -8,6 +8,18 @@ import (
 
 const modelRateLimitsKey = "model_rate_limits"
 
+const (
+	openAIRateLimitScopeCode  = "openai:code"
+	openAIRateLimitScopeImage = "openai:image"
+)
+
+func openAIRateLimitScopeForModel(model string) string {
+	if isOpenAIImageGenerationModel(model) {
+		return openAIRateLimitScopeImage
+	}
+	return openAIRateLimitScopeCode
+}
+
 // isRateLimitActiveForKey 检查指定 key 的限流是否生效
 func (a *Account) isRateLimitActiveForKey(key string) bool {
 	resetAt := a.modelRateLimitResetAt(key)
@@ -37,6 +49,11 @@ func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedMo
 		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
 	}
 	modelKey = strings.TrimSpace(modelKey)
+	if a.Platform == PlatformOpenAI {
+		if a.isRateLimitActiveForKey(openAIRateLimitScopeForModel(requestedModel)) {
+			return true
+		}
+	}
 	if modelKey == "" {
 		return false
 	}
@@ -59,10 +76,18 @@ func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context,
 		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
 	}
 	modelKey = strings.TrimSpace(modelKey)
-	if modelKey == "" {
-		return 0
+	var remaining time.Duration
+	if a.Platform == PlatformOpenAI {
+		remaining = a.getRateLimitRemainingForKey(openAIRateLimitScopeForModel(requestedModel))
 	}
-	return a.getRateLimitRemainingForKey(modelKey)
+	if modelKey == "" {
+		return remaining
+	}
+	modelRemaining := a.getRateLimitRemainingForKey(modelKey)
+	if modelRemaining > remaining {
+		return modelRemaining
+	}
+	return remaining
 }
 
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {

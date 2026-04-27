@@ -165,6 +165,66 @@ func TestIsModelRateLimited(t *testing.T) {
 			requestedModel: "claude-3-5-sonnet-20241022",
 			expected:       false,
 		},
+		{
+			name: "openai code scope blocks coding model",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						openAIRateLimitScopeCode: map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-5.5",
+			expected:       true,
+		},
+		{
+			name: "openai code scope does not block image model",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						openAIRateLimitScopeCode: map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-image-2",
+			expected:       false,
+		},
+		{
+			name: "openai image scope blocks image model",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						openAIRateLimitScopeImage: map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-image-2",
+			expected:       true,
+		},
+		{
+			name: "openai image scope does not block coding model",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						openAIRateLimitScopeImage: map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-5.5",
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {

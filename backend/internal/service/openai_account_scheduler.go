@@ -895,6 +895,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(account *Acco
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 		return false
 	}
+	if !account.IsSchedulableForModel(req.RequestedModel) {
+		return false
+	}
 	return account.SupportsOpenAIImageCapability(req.RequiredImageCapability)
 }
 

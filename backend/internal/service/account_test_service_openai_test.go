@@ -61,12 +61,15 @@ func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 
 type openAIAccountTestRepo struct {
 	mockAccountRepoForGemini
-	updatedExtra   map[string]any
-	rateLimitedID  int64
-	rateLimitedAt  *time.Time
-	clearedErrorID int64
-	setErrorID     int64
-	setErrorMsg    string
+	updatedExtra        map[string]any
+	rateLimitedID       int64
+	rateLimitedAt       *time.Time
+	modelRateLimitedID  int64
+	modelRateLimitScope string
+	modelRateLimitAt    *time.Time
+	clearedErrorID      int64
+	setErrorID          int64
+	setErrorMsg         string
 }
 
 func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -77,6 +80,13 @@ func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates 
 func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitedID = id
 	r.rateLimitedAt = &resetAt
+	return nil
+}
+
+func (r *openAIAccountTestRepo) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time) error {
+	r.modelRateLimitedID = id
+	r.modelRateLimitScope = scope
+	r.modelRateLimitAt = &resetAt
 	return nil
 }
 
@@ -180,6 +190,8 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testin
 	require.Equal(t, 100.0, repo.updatedExtra["codex_5h_used_percent"])
 	require.Equal(t, account.ID, repo.rateLimitedID)
 	require.NotNil(t, repo.rateLimitedAt)
+	require.Zero(t, repo.modelRateLimitedID)
+	require.Empty(t, repo.modelRateLimitScope)
 	require.Equal(t, account.ID, repo.clearedErrorID)
 	require.Equal(t, StatusActive, account.Status)
 	require.Empty(t, account.ErrorMessage)
@@ -243,7 +255,7 @@ func TestAccountTestService_OpenAI429ActiveAccountDoesNotClearError(t *testing.T
 	require.NotNil(t, account.RateLimitResetAt)
 }
 
-func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState(t *testing.T) {
+func TestAccountTestService_OpenAIUsageLimitWithoutResetUsesAccountFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()
 
@@ -264,12 +276,108 @@ func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
 	require.Error(t, err)
+	require.Equal(t, account.ID, repo.rateLimitedID)
+	require.NotNil(t, repo.rateLimitedAt)
+	require.Zero(t, repo.modelRateLimitedID)
+	require.Equal(t, account.ID, repo.clearedErrorID)
+	require.Equal(t, StatusActive, account.Status)
+	require.Empty(t, account.ErrorMessage)
+	require.NotNil(t, account.RateLimitResetAt)
+	require.WithinDuration(t, time.Now().Add(openAIUsageLimitFallbackCooldown), *repo.rateLimitedAt, 5*time.Second)
+}
+
+func TestAccountTestService_OpenAI429RateLimitExceededUsesModelScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resetAt := time.Now().Add(30 * time.Second).Unix()
+	resp := newJSONResponse(http.StatusTooManyRequests, fmt.Sprintf(`{"error":{"type":"rate_limit_exceeded","message":"slow down","resets_at":"%d"}}`, resetAt))
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:           81,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "stale 403",
+		Concurrency:  1,
+		Credentials:  map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+	require.Error(t, err)
 	require.Zero(t, repo.rateLimitedID)
 	require.Nil(t, repo.rateLimitedAt)
-	require.Zero(t, repo.clearedErrorID)
-	require.Equal(t, StatusError, account.Status)
-	require.Equal(t, "stale 403", account.ErrorMessage)
+	require.Equal(t, account.ID, repo.modelRateLimitedID)
+	require.Equal(t, openAIRateLimitScopeCode, repo.modelRateLimitScope)
+	require.NotNil(t, repo.modelRateLimitAt)
+	require.Equal(t, account.ID, repo.clearedErrorID)
+	require.Equal(t, StatusActive, account.Status)
+	require.Empty(t, account.ErrorMessage)
 	require.Nil(t, account.RateLimitResetAt)
+	require.True(t, account.isModelRateLimitedWithContext(context.Background(), "gpt-5.4"))
+}
+
+func TestAccountTestService_OpenAI429HeaderOnlyUsesModelScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusTooManyRequests, `{"error":{"type":"rate_limit_exceeded","message":"slow down"}}`)
+	resp.Header.Set("x-codex-primary-used-percent", "100")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "604800")
+	resp.Header.Set("x-codex-primary-window-minutes", "10080")
+	resp.Header.Set("x-codex-secondary-used-percent", "100")
+	resp.Header.Set("x-codex-secondary-reset-after-seconds", "18000")
+	resp.Header.Set("x-codex-secondary-window-minutes", "300")
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:          82,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+	require.Error(t, err)
+	require.Zero(t, repo.rateLimitedID)
+	require.Nil(t, repo.rateLimitedAt)
+	require.Equal(t, account.ID, repo.modelRateLimitedID)
+	require.Equal(t, openAIRateLimitScopeCode, repo.modelRateLimitScope)
+	require.NotNil(t, repo.modelRateLimitAt)
+	require.Nil(t, account.RateLimitResetAt)
+	require.True(t, account.isModelRateLimitedWithContext(context.Background(), "gpt-5.4"))
+}
+
+func TestAccountTestService_OpenAI429ImageModelUsesImageScope(t *testing.T) {
+	repo := &openAIAccountTestRepo{}
+	svc := &AccountTestService{accountRepo: repo}
+	account := &Account{
+		ID:          83,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Concurrency: 1,
+	}
+
+	resetAt := time.Now().Add(30 * time.Second).Unix()
+	body := []byte(fmt.Sprintf(`{"error":{"type":"rate_limit_exceeded","message":"slow down","resets_at":%d}}`, resetAt))
+	svc.reconcileOpenAI429State(context.Background(), account, http.Header{}, body, "gpt-image-2")
+
+	require.Zero(t, repo.rateLimitedID)
+	require.Nil(t, repo.rateLimitedAt)
+	require.Equal(t, account.ID, repo.modelRateLimitedID)
+	require.Equal(t, openAIRateLimitScopeImage, repo.modelRateLimitScope)
+	require.NotNil(t, repo.modelRateLimitAt)
+	require.Nil(t, account.RateLimitResetAt)
+	require.True(t, account.isModelRateLimitedWithContext(context.Background(), "gpt-image-2"))
+	require.False(t, account.isModelRateLimitedWithContext(context.Background(), "gpt-5.4"))
 }
 
 func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {

@@ -19,8 +19,12 @@ import (
 
 type openAIWSRateLimitSignalRepo struct {
 	stubOpenAIAccountRepo
-	rateLimitCalls []time.Time
-	updateExtra    []map[string]any
+	rateLimitCalls      []time.Time
+	modelRateLimitCalls []struct {
+		scope   string
+		resetAt time.Time
+	}
+	updateExtra []map[string]any
 }
 
 type openAICodexSnapshotAsyncRepo struct {
@@ -36,6 +40,14 @@ type openAICodexExtraListRepo struct {
 
 func (r *openAIWSRateLimitSignalRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	r.rateLimitCalls = append(r.rateLimitCalls, resetAt)
+	return nil
+}
+
+func (r *openAIWSRateLimitSignalRepo) SetModelRateLimit(_ context.Context, _ int64, scope string, resetAt time.Time) error {
+	r.modelRateLimitCalls = append(r.modelRateLimitCalls, struct {
+		scope   string
+		resetAt time.Time
+	}{scope: scope, resetAt: resetAt})
 	return nil
 }
 
@@ -165,6 +177,7 @@ func TestOpenAIGatewayService_Forward_WSv2ErrorEventUsageLimitPersistsRateLimit(
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 	require.Nil(t, upstream.lastReq, "WS 限流 error event 不应回退到同账号 HTTP")
 	require.Len(t, repo.rateLimitCalls, 1)
+	require.Empty(t, repo.modelRateLimitCalls)
 	require.WithinDuration(t, time.Unix(resetAt, 0), repo.rateLimitCalls[0], 2*time.Second)
 }
 
@@ -234,7 +247,9 @@ func TestOpenAIGatewayService_Forward_WSv2Handshake429PersistsRateLimit(t *testi
 	require.Nil(t, result)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 	require.Nil(t, upstream.lastReq, "WS 握手 429 不应回退到同账号 HTTP")
-	require.Len(t, repo.rateLimitCalls, 1)
+	require.Empty(t, repo.rateLimitCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, openAIRateLimitScopeCode, repo.modelRateLimitCalls[0].scope)
 	require.NotEmpty(t, repo.updateExtra, "握手 429 的 x-codex 头应立即落库")
 	require.Contains(t, repo.updateExtra[0], "codex_usage_updated_at")
 }
@@ -339,6 +354,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ErrorEventUsageL
 	case serverErr := <-serverErrCh:
 		require.Error(t, serverErr)
 		require.Len(t, repo.rateLimitCalls, 1)
+		require.Empty(t, repo.modelRateLimitCalls)
 		require.WithinDuration(t, time.Unix(resetAt, 0), repo.rateLimitCalls[0], 2*time.Second)
 	case <-time.After(5 * time.Second):
 		t.Fatal("等待 ingress websocket 结束超时")

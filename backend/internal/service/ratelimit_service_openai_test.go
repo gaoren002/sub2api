@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -149,12 +150,24 @@ func TestCalculateOpenAI429ResetTime_ReversedWindowOrder(t *testing.T) {
 
 type openAI429SnapshotRepo struct {
 	mockAccountRepoForGemini
-	rateLimitedID int64
-	updatedExtra  map[string]any
+	rateLimitedID       int64
+	rateLimitReset      time.Time
+	modelRateLimitID    int64
+	modelRateLimitScope string
+	modelRateLimitReset time.Time
+	updatedExtra        map[string]any
 }
 
-func (r *openAI429SnapshotRepo) SetRateLimited(_ context.Context, id int64, _ time.Time) error {
+func (r *openAI429SnapshotRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitedID = id
+	r.rateLimitReset = resetAt
+	return nil
+}
+
+func (r *openAI429SnapshotRepo) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time) error {
+	r.modelRateLimitID = id
+	r.modelRateLimitScope = scope
+	r.modelRateLimitReset = resetAt
 	return nil
 }
 
@@ -176,10 +189,16 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
 	headers.Set("x-codex-secondary-window-minutes", "300")
 
-	svc.handle429(context.Background(), account, headers, nil)
+	svc.handle429(context.Background(), account, headers, nil, "gpt-5.5")
 
-	if repo.rateLimitedID != account.ID {
-		t.Fatalf("rateLimitedID = %d, want %d", repo.rateLimitedID, account.ID)
+	if repo.rateLimitedID != 0 {
+		t.Fatalf("rateLimitedID = %d, want 0", repo.rateLimitedID)
+	}
+	if repo.modelRateLimitID != account.ID {
+		t.Fatalf("modelRateLimitID = %d, want %d", repo.modelRateLimitID, account.ID)
+	}
+	if repo.modelRateLimitScope != openAIRateLimitScopeCode {
+		t.Fatalf("modelRateLimitScope = %s, want %s", repo.modelRateLimitScope, openAIRateLimitScopeCode)
 	}
 	if len(repo.updatedExtra) == 0 {
 		t.Fatal("expected codex snapshot to be persisted on 429")
@@ -190,6 +209,104 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	if got := repo.updatedExtra["codex_7d_used_percent"]; got != 100.0 {
 		t.Fatalf("codex_7d_used_percent = %v, want 100", got)
 	}
+}
+
+func TestHandle429_OpenAIImageUsesImageScope(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 124, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	resetAt := time.Now().Add(30 * time.Second).Unix()
+	body := []byte(`{"error":{"type":"rate_limit_exceeded","resets_at":` + strconv.FormatInt(resetAt, 10) + `}}`)
+
+	svc.handle429(context.Background(), account, http.Header{}, body, "gpt-image-2")
+
+	require.Zero(t, repo.rateLimitedID)
+	require.Equal(t, account.ID, repo.modelRateLimitID)
+	require.Equal(t, openAIRateLimitScopeImage, repo.modelRateLimitScope)
+	require.WithinDuration(t, time.Unix(resetAt, 0), repo.modelRateLimitReset, time.Second)
+}
+
+func TestHandle429_OpenAIUsageLimitReachedUsesAccountScope(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 126, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	resetAt := time.Now().Add(7 * 24 * time.Hour).Unix()
+	body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":` + strconv.FormatInt(resetAt, 10) + `}}`)
+
+	svc.handle429(context.Background(), account, http.Header{}, body, "gpt-5.5")
+
+	require.Equal(t, account.ID, repo.rateLimitedID)
+	require.WithinDuration(t, time.Unix(resetAt, 0), repo.rateLimitReset, time.Second)
+	require.Zero(t, repo.modelRateLimitID)
+	require.Empty(t, repo.modelRateLimitScope)
+}
+
+func TestHandle429_OpenAIUsageLimitReachedWithoutResetUsesAccountFallback(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 127, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	before := time.Now()
+	body := []byte(`{"error":{"message":"The usage limit has been reached","type":"usage_limit_reached"}}`)
+	svc.handle429(context.Background(), account, http.Header{}, body, "gpt-5.5")
+	after := time.Now()
+
+	require.Equal(t, account.ID, repo.rateLimitedID)
+	require.Zero(t, repo.modelRateLimitID)
+	require.Empty(t, repo.modelRateLimitScope)
+	require.True(t, !repo.rateLimitReset.Before(before.Add(openAIUsageLimitFallbackCooldown)) && !repo.rateLimitReset.After(after.Add(openAIUsageLimitFallbackCooldown)),
+		"fallback reset %v must be within [%v, %v]", repo.rateLimitReset, before.Add(openAIUsageLimitFallbackCooldown), after.Add(openAIUsageLimitFallbackCooldown))
+}
+
+func TestHandle429_OpenAIInsufficientQuotaUsesAccountScope(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 128, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	before := time.Now()
+	body := []byte(`{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}`)
+	svc.handle429(context.Background(), account, http.Header{}, body, "gpt-5.5")
+	after := time.Now()
+
+	require.Equal(t, account.ID, repo.rateLimitedID)
+	require.Zero(t, repo.modelRateLimitID)
+	require.Empty(t, repo.modelRateLimitScope)
+	require.True(t, !repo.rateLimitReset.Before(before.Add(openAIUsageLimitFallbackCooldown)) && !repo.rateLimitReset.After(after.Add(openAIUsageLimitFallbackCooldown)),
+		"fallback reset %v must be within [%v, %v]", repo.rateLimitReset, before.Add(openAIUsageLimitFallbackCooldown), after.Add(openAIUsageLimitFallbackCooldown))
+}
+
+func TestHandle429_OpenAIRateLimitExceededCodeUsesModelScope(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 129, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	resetAt := time.Now().Add(45 * time.Second).Unix()
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","resets_at":` + strconv.FormatInt(resetAt, 10) + `}}`)
+
+	svc.handle429(context.Background(), account, http.Header{}, body, "gpt-5.5")
+
+	require.Zero(t, repo.rateLimitedID)
+	require.Equal(t, account.ID, repo.modelRateLimitID)
+	require.Equal(t, openAIRateLimitScopeCode, repo.modelRateLimitScope)
+	require.WithinDuration(t, time.Unix(resetAt, 0), repo.modelRateLimitReset, time.Second)
+}
+
+func TestHandle429_OpenAINoResetFallbackFiveSeconds(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 125, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	before := time.Now()
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`), "gpt-5.5")
+	after := time.Now()
+
+	require.Zero(t, repo.rateLimitedID)
+	require.Equal(t, account.ID, repo.modelRateLimitID)
+	require.Equal(t, openAIRateLimitScopeCode, repo.modelRateLimitScope)
+	require.True(t, !repo.modelRateLimitReset.Before(before.Add(rateLimitFallbackCooldown)) && !repo.modelRateLimitReset.After(after.Add(rateLimitFallbackCooldown)),
+		"fallback reset %v must be within [%v, %v]", repo.modelRateLimitReset, before.Add(rateLimitFallbackCooldown), after.Add(rateLimitFallbackCooldown))
 }
 
 func TestNormalizedCodexLimits(t *testing.T) {
