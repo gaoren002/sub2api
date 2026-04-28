@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -167,6 +168,75 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	require.False(t, wrote)
 	require.Equal(t, http.StatusTeapot, w.Code)
 	assert.Equal(t, "already written", w.Body.String())
+}
+
+type openAIHandlerInformationalRecorder struct {
+	header        http.Header
+	body          bytes.Buffer
+	informational []int
+	status        int
+	wroteFinal    bool
+}
+
+func newOpenAIHandlerInformationalRecorder() *openAIHandlerInformationalRecorder {
+	return &openAIHandlerInformationalRecorder{
+		header: make(http.Header),
+	}
+}
+
+func (r *openAIHandlerInformationalRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *openAIHandlerInformationalRecorder) WriteHeader(code int) {
+	if code >= 100 && code < 200 {
+		r.informational = append(r.informational, code)
+		return
+	}
+	if r.wroteFinal {
+		return
+	}
+	r.status = code
+	r.wroteFinal = true
+}
+
+func (r *openAIHandlerInformationalRecorder) Write(data []byte) (int, error) {
+	if !r.wroteFinal {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.body.Write(data)
+}
+
+func (r *openAIHandlerInformationalRecorder) Flush() {}
+
+func TestOpenAIEnsureForwardErrorResponse_WritesAfterImageJSONKeepalive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := newOpenAIHandlerInformationalRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	keepalive := service.StartOpenAIImagesJSONKeepalive(c, time.Millisecond, time.Millisecond)
+	require.NotNil(t, keepalive)
+	require.Eventually(t, func() bool {
+		return service.OpenAIImagesJSONKeepaliveWasWritten(c)
+	}, 100*time.Millisecond, time.Millisecond)
+	keepalive.Stop()
+	require.False(t, c.Writer.Written())
+	require.Equal(t, []int{http.StatusProcessing}, w.informational[:1])
+
+	h := &OpenAIGatewayHandler{}
+	wrote := h.ensureForwardErrorResponse(c, false)
+
+	require.True(t, wrote)
+	require.Equal(t, http.StatusBadGateway, w.status)
+
+	var parsed map[string]any
+	err := json.Unmarshal(bytes.TrimSpace(w.body.Bytes()), &parsed)
+	require.NoError(t, err)
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "upstream_error", errorObj["type"])
+	assert.Equal(t, "Upstream request failed", errorObj["message"])
 }
 
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {

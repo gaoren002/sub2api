@@ -3736,6 +3736,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
+		FinishOpenAIImagesJSONKeepalive(c)
 		c.JSON(status, gin.H{
 			"error": gin.H{
 				"type":    errType,
@@ -3763,6 +3764,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			Message:            upstreamMsg,
 			Detail:             upstreamDetail,
 		})
+		FinishOpenAIImagesJSONKeepalive(c)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
@@ -3829,6 +3831,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		errMsg = "Upstream request failed"
 	}
 
+	FinishOpenAIImagesJSONKeepalive(c)
 	c.JSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,

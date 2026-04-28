@@ -80,6 +80,16 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		zap.Bool("multipart", parsed.Multipart),
 		zap.String("capability", string(parsed.RequiredCapability)),
 	)
+	if !parsed.Stream {
+		jsonKeepalive := service.StartOpenAIImagesJSONKeepalive(
+			c,
+			service.OpenAIImagesJSONKeepaliveInitialDelay,
+			service.OpenAIImagesJSONKeepaliveInterval,
+		)
+		if jsonKeepalive != nil {
+			defer jsonKeepalive.Stop()
+		}
+	}
 
 	if parsed.Multipart {
 		setOpsRequestContext(c, parsed.Model, parsed.Stream, nil)

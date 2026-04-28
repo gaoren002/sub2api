@@ -774,8 +774,10 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context) (OpenAIUsage, int, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		StopOpenAIImagesJSONKeepalive(c)
 		return OpenAIUsage{}, 0, err
 	}
+	FinishOpenAIImagesJSONKeepalive(c)
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {

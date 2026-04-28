@@ -513,6 +513,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 ) (OpenAIUsage, int, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		StopOpenAIImagesJSONKeepalive(c)
 		return OpenAIUsage{}, 0, err
 	}
 
@@ -528,9 +529,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	}
 	results, createdAt, usageRaw, firstMeta, _, err := collectOpenAIImagesFromResponsesBody(body)
 	if err != nil {
+		StopOpenAIImagesJSONKeepalive(c)
 		return OpenAIUsage{}, 0, err
 	}
 	if len(results) == 0 {
+		StopOpenAIImagesJSONKeepalive(c)
 		return OpenAIUsage{}, 0, fmt.Errorf("upstream did not return image output")
 	}
 	if strings.TrimSpace(firstMeta.Model) == "" {
@@ -539,8 +542,10 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 
 	responseBody, err := buildOpenAIImagesAPIResponse(results, createdAt, usageRaw, firstMeta, responseFormat)
 	if err != nil {
+		StopOpenAIImagesJSONKeepalive(c)
 		return OpenAIUsage{}, 0, err
 	}
+	FinishOpenAIImagesJSONKeepalive(c)
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Data(resp.StatusCode, "application/json; charset=utf-8", responseBody)
 	return usage, len(results), nil

@@ -74,6 +74,7 @@ func anthropicTooLargeError(c *gin.Context) {
 
 // openAITooLargeError 以 OpenAI / Gemini 格式写入超限错误。
 func openAITooLargeError(c *gin.Context) {
+	FinishOpenAIImagesJSONKeepalive(c)
 	c.JSON(http.StatusBadGateway, gin.H{
 		"error": gin.H{
 			"type":    "upstream_error",
