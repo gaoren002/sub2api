@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func (w *failingOpenAIImageWriter) Write(p []byte) (int, error) {
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"1024x1024","quality":"high","stream":true}`)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","prompt_optimization":false,"size":"1024x1024","quality":"high","stream":true}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -49,6 +50,8 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSON(t *testing.T) {
 	require.Equal(t, "/v1/images/generations", parsed.Endpoint)
 	require.Equal(t, "gpt-image-2", parsed.Model)
 	require.Equal(t, "draw a cat", parsed.Prompt)
+	require.NotNil(t, parsed.PromptOptimization)
+	require.False(t, *parsed.PromptOptimization)
 	require.True(t, parsed.Stream)
 	require.Equal(t, "1024x1024", parsed.Size)
 	require.Equal(t, "1K", parsed.SizeTier)
@@ -63,6 +66,7 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T
 	writer := multipart.NewWriter(&body)
 	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
 	require.NoError(t, writer.WriteField("prompt", "replace background"))
+	require.NoError(t, writer.WriteField("promptOptimization", "false"))
 	require.NoError(t, writer.WriteField("size", "1536x1024"))
 	part, err := writer.CreateFormFile("image", "source.png")
 	require.NoError(t, err)
@@ -84,10 +88,65 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T
 	require.True(t, parsed.Multipart)
 	require.Equal(t, "gpt-image-2", parsed.Model)
 	require.Equal(t, "replace background", parsed.Prompt)
+	require.NotNil(t, parsed.PromptOptimization)
+	require.False(t, *parsed.PromptOptimization)
 	require.Equal(t, "1536x1024", parsed.Size)
 	require.Equal(t, "2K", parsed.SizeTier)
 	require.Len(t, parsed.Uploads, 1)
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
+}
+
+func TestRewriteOpenAIImagesModel_StripsInternalJSONFields(t *testing.T) {
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","prompt_optimization":false,"promptOptimization":true}`)
+
+	rewritten, contentType, err := rewriteOpenAIImagesModel(body, "application/json", "gpt-image-1")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, "gpt-image-1", gjson.GetBytes(rewritten, "model").String())
+	require.False(t, gjson.GetBytes(rewritten, "prompt_optimization").Exists())
+	require.False(t, gjson.GetBytes(rewritten, "promptOptimization").Exists())
+}
+
+func TestRewriteOpenAIImagesModel_StripsInternalMultipartFields(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
+	require.NoError(t, writer.WriteField("prompt", "replace background"))
+	require.NoError(t, writer.WriteField("prompt_optimization", "false"))
+	part, err := writer.CreateFormFile("image", "source.png")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("fake-image-bytes"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	rewritten, contentType, err := rewriteOpenAIImagesModel(body.Bytes(), writer.FormDataContentType(), "gpt-image-1")
+
+	require.NoError(t, err)
+	_, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	reader := multipart.NewReader(bytes.NewReader(rewritten), params["boundary"])
+	fields := map[string]string{}
+	files := 0
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		data, err := io.ReadAll(part)
+		require.NoError(t, err)
+		if part.FileName() != "" {
+			files++
+		} else {
+			fields[part.FormName()] = string(data)
+		}
+		require.NoError(t, part.Close())
+	}
+	require.Equal(t, "gpt-image-1", fields["model"])
+	require.Equal(t, "replace background", fields["prompt"])
+	require.NotContains(t, fields, "prompt_optimization")
+	require.Equal(t, 1, files)
 }
 
 func TestOpenAIImagesRequestModerationBody_JSONEditIncludesInputImageURLs(t *testing.T) {
@@ -1175,6 +1234,24 @@ func TestBuildOpenAIImagesResponsesRequest_DowngradesMultipleImagesToSingle(t *t
 	require.False(t, gjson.GetBytes(body, "tools.0.n").Exists())
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(body, "tools.0.model").String())
 	require.Equal(t, "draw a cat", gjson.GetBytes(body, "input.0.content.0.text").String())
+}
+
+func TestBuildOpenAIImagesResponsesRequest_DisablesPromptOptimization(t *testing.T) {
+	promptOptimization := false
+	parsed := &OpenAIImagesRequest{
+		Endpoint:           openAIImagesGenerationsEndpoint,
+		Model:              "gpt-image-2",
+		Prompt:             "draw a cat exactly",
+		PromptOptimization: &promptOptimization,
+	}
+
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
+	require.NoError(t, err)
+	require.NotNil(t, body)
+	require.Equal(t, "draw a cat exactly", gjson.GetBytes(body, "input.0.content.0.text").String())
+	instructions := gjson.GetBytes(body, "instructions").String()
+	require.Contains(t, instructions, "original image prompt")
+	require.Contains(t, instructions, "Do not rewrite")
 }
 
 func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {

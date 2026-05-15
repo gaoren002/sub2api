@@ -59,7 +59,7 @@ function createStreamResponse(lines: string[]) {
   } as Response
 }
 
-function mountModal() {
+function mountModal(accountOverrides: Record<string, unknown> = {}) {
   return mount(AccountTestModal, {
     props: {
       show: false,
@@ -68,7 +68,8 @@ function mountModal() {
         name: 'Gemini Image Test',
         platform: 'gemini',
         type: 'apikey',
-        status: 'active'
+        status: 'active',
+        ...accountOverrides
       }
     } as any,
     global: {
@@ -79,6 +80,11 @@ function mountModal() {
           props: ['modelValue'],
           emits: ['update:modelValue'],
           template: '<textarea class="textarea-stub" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />'
+        },
+        Toggle: {
+          props: ['modelValue'],
+          emits: ['update:modelValue'],
+          template: '<button class="toggle-stub" type="button" @click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
         },
         Icon: true
       }
@@ -143,5 +149,43 @@ describe('AccountTestModal', () => {
     const preview = wrapper.find('img[alt="test-image-1"]')
     expect(preview.exists()).toBe(true)
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
+  })
+
+  it('openai 图片模型测试会携带提示词优化开关', async () => {
+    getAvailableModels.mockResolvedValueOnce([
+      { id: 'gpt-image-2', display_name: 'GPT Image 2' }
+    ])
+
+    const wrapper = mountModal({
+      name: 'OpenAI Image Test',
+      platform: 'openai',
+      type: 'oauth'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const promptInput = wrapper.find('textarea.textarea-stub')
+    expect(promptInput.exists()).toBe(true)
+    await promptInput.setValue('draw a tiny orange cat astronaut')
+
+    const toggle = wrapper.find('button.toggle-stub')
+    expect(toggle.exists()).toBe(true)
+    await toggle.trigger('click')
+
+    const buttons = wrapper.findAll('button')
+    const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+
+    await startButton!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toEqual({
+      model_id: 'gpt-image-2',
+      prompt: 'draw a tiny orange cat astronaut',
+      prompt_optimization: false
+    })
   })
 })
