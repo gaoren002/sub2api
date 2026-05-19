@@ -65,7 +65,6 @@ type OpenAIImagesRequest struct {
 	Model              string
 	ExplicitModel      bool
 	Prompt             string
-	PromptOptimization *bool
 	Stream             bool
 	N                  int
 	Size               string
@@ -230,11 +229,6 @@ func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
 		req.ExplicitModel = req.Model != ""
 	}
 	req.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
-	promptOptimization, err := parseOpenAIImagesJSONOptionalBool(body, "prompt_optimization", "promptOptimization")
-	if err != nil {
-		return err
-	}
-	req.PromptOptimization = promptOptimization
 
 	if streamResult := gjson.GetBytes(body, "stream"); streamResult.Exists() {
 		if streamResult.Type != gjson.True && streamResult.Type != gjson.False {
@@ -380,12 +374,6 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 			req.ExplicitModel = value != ""
 		case "prompt":
 			req.Prompt = value
-		case "prompt_optimization", "promptOptimization":
-			parsed, err := strconv.ParseBool(value)
-			if err != nil {
-				return fmt.Errorf("invalid %s field value", name)
-			}
-			req.PromptOptimization = &parsed
 		case "size":
 			req.Size = value
 			req.ExplicitSize = value != ""
@@ -446,29 +434,6 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 		return fmt.Errorf("image file is required")
 	}
 	return nil
-}
-
-func parseOpenAIImagesJSONOptionalBool(body []byte, paths ...string) (*bool, error) {
-	for _, path := range paths {
-		result := gjson.GetBytes(body, path)
-		if !result.Exists() {
-			continue
-		}
-		switch result.Type {
-		case gjson.True, gjson.False:
-			value := result.Bool()
-			return &value, nil
-		case gjson.String:
-			value, err := strconv.ParseBool(strings.TrimSpace(result.String()))
-			if err != nil {
-				return nil, fmt.Errorf("invalid %s field value", path)
-			}
-			return &value, nil
-		default:
-			return nil, fmt.Errorf("invalid %s field type", path)
-		}
-	}
-	return nil, nil
 }
 
 func parseOpenAIImageDimensions(_ textproto.MIMEHeader) (int, int) {
@@ -843,44 +808,19 @@ func buildOpenAIImagesURL(base string, endpoint string) string {
 
 func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]byte, string, error) {
 	model = strings.TrimSpace(model)
+	if model == "" {
+		return body, contentType, nil
+	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
 		rewrittenBody, rewrittenType, rewriteErr := rewriteOpenAIImagesMultipartModel(body, contentType, model)
 		return rewrittenBody, rewrittenType, rewriteErr
 	}
-	rewritten, err := stripOpenAIImagesInternalJSONFields(body)
-	if err != nil {
-		return nil, "", err
-	}
-	if model == "" {
-		return rewritten, contentType, nil
-	}
-	rewritten, err = sjson.SetBytes(rewritten, "model", model)
+	rewritten, err := sjson.SetBytes(body, "model", model)
 	if err != nil {
 		return nil, "", fmt.Errorf("rewrite image request model: %w", err)
 	}
 	return rewritten, contentType, nil
-}
-
-func stripOpenAIImagesInternalJSONFields(body []byte) ([]byte, error) {
-	rewritten := body
-	var err error
-	for _, path := range []string{"prompt_optimization", "promptOptimization"} {
-		rewritten, err = sjson.DeleteBytes(rewritten, path)
-		if err != nil {
-			return nil, fmt.Errorf("strip image request field %s: %w", path, err)
-		}
-	}
-	return rewritten, nil
-}
-
-func isOpenAIImagesInternalMultipartField(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "prompt_optimization", "promptOptimization":
-		return true
-	default:
-		return false
-	}
 }
 
 func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model string) ([]byte, string, error) {
@@ -908,10 +848,6 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 		}
 
 		formName := strings.TrimSpace(part.FormName())
-		if part.FileName() == "" && isOpenAIImagesInternalMultipartField(formName) {
-			_ = part.Close()
-			continue
-		}
 		partHeader := cloneMultipartHeader(part.Header)
 		target, err := writer.CreatePart(partHeader)
 		if err != nil {
@@ -919,7 +855,7 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 			return nil, "", fmt.Errorf("create multipart part: %w", err)
 		}
 
-		if formName == "model" && part.FileName() == "" && model != "" {
+		if formName == "model" && part.FileName() == "" {
 			if _, err := target.Write([]byte(model)); err != nil {
 				_ = part.Close()
 				return nil, "", fmt.Errorf("rewrite multipart model: %w", err)
@@ -935,7 +871,7 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 		_ = part.Close()
 	}
 
-	if !modelWritten && model != "" {
+	if !modelWritten {
 		if err := writer.WriteField("model", model); err != nil {
 			return nil, "", fmt.Errorf("append multipart model field: %w", err)
 		}

@@ -66,21 +66,6 @@
         />
       </div>
 
-      <div
-        v-if="supportsOpenAIImageTest"
-        class="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-dark-500 dark:bg-dark-700"
-      >
-        <div>
-          <div class="text-sm font-medium text-gray-800 dark:text-gray-100">
-            {{ t('admin.accounts.promptOptimizationLabel') }}
-          </div>
-          <div class="text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.promptOptimizationHint') }}
-          </div>
-        </div>
-        <Toggle v-model="promptOptimization" :disabled="status === 'connecting'" />
-      </div>
-
       <!-- Terminal Output -->
       <div class="group relative">
         <div
@@ -251,7 +236,6 @@ import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import TextArea from '@/components/common/TextArea.vue'
-import Toggle from '@/components/common/Toggle.vue'
 import { Icon } from '@/components/icons'
 import { useClipboard } from '@/composables/useClipboard'
 import { adminAPI } from '@/api/admin'
@@ -287,7 +271,6 @@ const errorMessage = ref('')
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
-const promptOptimization = ref(true)
 const loadingModels = ref(false)
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
@@ -325,7 +308,6 @@ watch(
   async (newVal) => {
     if (newVal && props.account) {
       testPrompt.value = ''
-      promptOptimization.value = true
       resetState()
       await loadAvailableModels()
     } else {
@@ -417,18 +399,6 @@ const startTest = async () => {
   abortController = new AbortController()
 
   try {
-    const requestBody: {
-      model_id: string
-      prompt: string
-      prompt_optimization?: boolean
-    } = {
-      model_id: selectedModelId.value,
-      prompt: supportsImageTest.value ? testPrompt.value.trim() : ''
-    }
-    if (supportsOpenAIImageTest.value) {
-      requestBody.prompt_optimization = promptOptimization.value
-    }
-
     // Create EventSource for SSE
     const url = `/api/v1/admin/accounts/${props.account.id}/test`
 
@@ -439,7 +409,10 @@ const startTest = async () => {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+              model_id: selectedModelId.value,
+              prompt: supportsImageTest.value ? testPrompt.value.trim() : ''
+            }),
       signal: abortController.signal
     })
 
