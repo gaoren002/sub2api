@@ -3751,8 +3751,6 @@ export default {
       imagePromptPlaceholder: 'Example: Generate an orange cat astronaut sticker in pixel-art style on a solid background.',
       imagePromptDefault: 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
       imageTestHint: 'When an image model is selected, this test sends a real image-generation request and previews the returned image below.',
-      promptOptimizationLabel: 'Prompt optimization',
-      promptOptimizationHint: 'When enabled, upstream may rewrite the prompt. Turn it off to ask the image tool to use the original prompt.',
       imageTestMode: 'Mode: Image generation test',
       imagePreview: 'Generated images:',
       imageReceived: 'Received test image #{count}',

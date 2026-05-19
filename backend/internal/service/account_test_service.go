@@ -170,7 +170,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // All account types use full Claude Code client characteristics, only auth header differs
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
-func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, promptOptimization *bool) error {
+func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string) error {
 	ctx := c.Request.Context()
 
 	// Get account
@@ -181,7 +181,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 
 	// Route to platform-specific test method
 	if account.IsOpenAI() {
-		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode), promptOptimization)
+		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
 
 	if account.IsGemini() {
@@ -492,8 +492,9 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 }
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
-func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string, promptOptimization *bool) error {
+func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
 	ctx := c.Request.Context()
+	_ = prompt
 	mode = normalizeAccountTestMode(mode)
 
 	// Default to openai.DefaultTestModel for OpenAI testing
@@ -519,7 +520,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if account.Type == "apikey" {
 			return s.testOpenAIImageAPIKey(c, ctx, account, testModelID, imagePrompt)
 		}
-		return s.testOpenAIImageOAuth(c, ctx, account, testModelID, imagePrompt, promptOptimization)
+		return s.testOpenAIImageOAuth(c, ctx, account, testModelID, imagePrompt)
 	}
 
 	// Determine authentication method and API URL
@@ -1414,7 +1415,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 }
 
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
-func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string, promptOptimization *bool) error {
+func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
 	authToken := account.GetOpenAIAccessToken()
 	if authToken == "" {
 		return s.sendErrorAndEnd(c, "No access token available")
@@ -1431,10 +1432,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	s.sendEvent(c, TestEvent{Type: "content", Text: "Calling Codex /responses image tool...\n"})
 
 	parsed := &OpenAIImagesRequest{
-		Endpoint:           openAIImagesGenerationsEndpoint,
-		Model:              strings.TrimSpace(modelID),
-		Prompt:             prompt,
-		PromptOptimization: promptOptimization,
+		Endpoint: openAIImagesGenerationsEndpoint,
+		Model:    strings.TrimSpace(modelID),
+		Prompt:   prompt,
 	}
 	applyOpenAIImagesDefaults(parsed)
 
@@ -1538,7 +1538,7 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 	ginCtx, _ := gin.CreateTestContext(w)
 	ginCtx.Request = (&http.Request{}).WithContext(ctx)
 
-	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "", AccountTestModeDefault, nil)
+	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "", AccountTestModeDefault)
 
 	finishedAt := time.Now()
 	body := w.Body.String()
