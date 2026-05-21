@@ -63,6 +63,7 @@ const (
 	openAIGPT54LongContextInputThreshold   = 272000
 	openAIGPT54LongContextInputMultiplier  = 2.0
 	openAIGPT54LongContextOutputMultiplier = 1.5
+	openAIFastPriority25xMultiplier        = 2.5
 )
 
 func normalizeBillingServiceTier(serviceTier string) string {
@@ -392,7 +393,7 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 	if channelPricing.ImageOutputPrice != nil {
 		pricing.ImageOutputPricePerToken = *channelPricing.ImageOutputPrice
 	}
-	return pricing, nil
+	return s.applyModelSpecificPricingPolicy(model, pricing), nil
 }
 
 // --- 统一计费入口 ---
@@ -616,13 +617,20 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 	if pricing == nil {
 		return nil
 	}
-	if !isOpenAIGPT54Model(model) {
-		return pricing
-	}
-	if pricing.LongContextInputThreshold > 0 && pricing.LongContextInputMultiplier > 0 && pricing.LongContextOutputMultiplier > 0 {
+	normalized := normalizeKnownOpenAICodexModel(model)
+	if !isOpenAIGPT54ModelNormalized(normalized) && !usesOpenAIFastPriority25x(normalized) {
 		return pricing
 	}
 	cloned := *pricing
+	if usesOpenAIFastPriority25x(normalized) {
+		applyOpenAIFastPriority25xPricing(&cloned)
+	}
+	if !isOpenAIGPT54ModelNormalized(normalized) {
+		return &cloned
+	}
+	if pricing.LongContextInputThreshold > 0 && pricing.LongContextInputMultiplier > 0 && pricing.LongContextOutputMultiplier > 0 {
+		return &cloned
+	}
 	if cloned.LongContextInputThreshold <= 0 {
 		cloned.LongContextInputThreshold = openAIGPT54LongContextInputThreshold
 	}
@@ -650,8 +658,30 @@ func isOpenAIGPT54Model(model string) bool {
 	// 仅当模型字符串实际属于已知 GPT-5/Codex 族时才做归一判定，避免
 	// normalizeCodexModel 的默认兜底把非 OpenAI 模型（claude-*、gemini-*、gpt-4o）
 	// 误识别为 gpt-5.4。
-	normalized := normalizeKnownOpenAICodexModel(model)
+	return isOpenAIGPT54ModelNormalized(normalizeKnownOpenAICodexModel(model))
+}
+
+func isOpenAIGPT54ModelNormalized(normalized string) bool {
 	return normalized == "gpt-5.4" || normalized == "gpt-5.5"
+}
+
+func usesOpenAIFastPriority25x(normalized string) bool {
+	return normalized == "gpt-5.5" || normalized == "codex-auto-review"
+}
+
+func applyOpenAIFastPriority25xPricing(pricing *ModelPricing) {
+	if pricing == nil {
+		return
+	}
+	if pricing.InputPricePerToken > 0 {
+		pricing.InputPricePerTokenPriority = pricing.InputPricePerToken * openAIFastPriority25xMultiplier
+	}
+	if pricing.OutputPricePerToken > 0 {
+		pricing.OutputPricePerTokenPriority = pricing.OutputPricePerToken * openAIFastPriority25xMultiplier
+	}
+	if pricing.CacheReadPricePerToken > 0 {
+		pricing.CacheReadPricePerTokenPriority = pricing.CacheReadPricePerToken * openAIFastPriority25xMultiplier
+	}
 }
 
 // CalculateCostWithConfig 使用配置中的默认倍率计算费用

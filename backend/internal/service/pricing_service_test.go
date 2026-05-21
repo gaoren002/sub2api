@@ -125,8 +125,11 @@ func TestDefaultPricingIncludesCodexAutoReview(t *testing.T) {
 	got := svc.GetModelPricing("codex-auto-review")
 	require.NotNil(t, got)
 	require.InDelta(t, 2.5e-6, got.InputCostPerToken, 1e-12)
+	require.InDelta(t, 6.25e-6, got.InputCostPerTokenPriority, 1e-12)
 	require.InDelta(t, 1.5e-5, got.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 3.75e-5, got.OutputCostPerTokenPriority, 1e-12)
 	require.InDelta(t, 2.5e-7, got.CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 6.25e-7, got.CacheReadInputTokenCostPriority, 1e-12)
 }
 
 func TestGetModelPricing_Gpt54MiniUsesDedicatedStaticFallbackWhenRemoteMissing(t *testing.T) {

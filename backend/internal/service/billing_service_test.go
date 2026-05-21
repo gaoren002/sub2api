@@ -537,6 +537,60 @@ func TestCalculateCostWithServiceTier_Gpt54MiniPriorityFallsBackToTierMultiplier
 	require.InDelta(t, baseCost.TotalCost*2, priorityCost.TotalCost, 1e-10)
 }
 
+func TestCalculateCostWithServiceTier_Gpt55PriorityUses2Point5xPricing(t *testing.T) {
+	svc := NewBillingService(&config.Config{}, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.5": {
+				InputCostPerToken:               5e-6,
+				InputCostPerTokenPriority:       10e-6,
+				OutputCostPerToken:              30e-6,
+				OutputCostPerTokenPriority:      60e-6,
+				CacheReadInputTokenCost:         0.5e-6,
+				CacheReadInputTokenCostPriority: 1e-6,
+			},
+		},
+	})
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 20}
+
+	baseCost, err := svc.CalculateCost("gpt-5.5", tokens, 1.0)
+	require.NoError(t, err)
+
+	priorityCost, err := svc.CalculateCostWithServiceTier("gpt-5.5", tokens, 1.0, "priority")
+	require.NoError(t, err)
+
+	require.InDelta(t, baseCost.InputCost*2.5, priorityCost.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*2.5, priorityCost.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.CacheReadCost*2.5, priorityCost.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost*2.5, priorityCost.TotalCost, 1e-10)
+}
+
+func TestCalculateCostWithServiceTier_CodexAutoReviewPriorityUses2Point5xPricing(t *testing.T) {
+	svc := NewBillingService(&config.Config{}, &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"codex-auto-review": {
+				InputCostPerToken:               5e-6,
+				InputCostPerTokenPriority:       10e-6,
+				OutputCostPerToken:              30e-6,
+				OutputCostPerTokenPriority:      60e-6,
+				CacheReadInputTokenCost:         0.5e-6,
+				CacheReadInputTokenCostPriority: 1e-6,
+			},
+		},
+	})
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 20}
+
+	baseCost, err := svc.CalculateCost("codex-auto-review", tokens, 1.0)
+	require.NoError(t, err)
+
+	priorityCost, err := svc.CalculateCostWithServiceTier("codex-auto-review", tokens, 1.0, "priority")
+	require.NoError(t, err)
+
+	require.InDelta(t, baseCost.InputCost*2.5, priorityCost.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*2.5, priorityCost.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.CacheReadCost*2.5, priorityCost.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost*2.5, priorityCost.TotalCost, 1e-10)
+}
+
 func TestCalculateCostWithServiceTier_Gpt54NanoFlexAppliesHalfMultiplier(t *testing.T) {
 	svc := newTestBillingService()
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheCreationTokens: 40, CacheReadTokens: 20}
@@ -805,6 +859,24 @@ func TestGetModelPricingWithChannel_CacheReadPriceAffectsPriority(t *testing.T) 
 	// CacheReadPrice should set both normal and priority
 	require.InDelta(t, 2e-6, pricing.CacheReadPricePerToken, 1e-12)
 	require.InDelta(t, 2e-6, pricing.CacheReadPricePerTokenPriority, 1e-12)
+}
+
+func TestGetModelPricingWithChannel_Fast25xRecalculatedForChannelOverrides(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricingWithChannel("gpt-5.5", &ChannelModelPricing{
+		InputPrice:     testPtrFloat64(4e-6),
+		OutputPrice:    testPtrFloat64(8e-6),
+		CacheReadPrice: testPtrFloat64(1e-6),
+	})
+	require.NoError(t, err)
+
+	require.InDelta(t, 4e-6, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 10e-6, pricing.InputPricePerTokenPriority, 1e-12)
+	require.InDelta(t, 8e-6, pricing.OutputPricePerToken, 1e-12)
+	require.InDelta(t, 20e-6, pricing.OutputPricePerTokenPriority, 1e-12)
+	require.InDelta(t, 1e-6, pricing.CacheReadPricePerToken, 1e-12)
+	require.InDelta(t, 2.5e-6, pricing.CacheReadPricePerTokenPriority, 1e-12)
 }
 
 func TestGetModelPricingWithChannel_UnknownModelReturnsError(t *testing.T) {
