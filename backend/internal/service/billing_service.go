@@ -654,13 +654,6 @@ func (s *BillingService) shouldApplySessionLongContextPricing(tokens UsageTokens
 	return totalInputTokens > pricing.LongContextInputThreshold
 }
 
-func isOpenAIGPT54Model(model string) bool {
-	// 仅当模型字符串实际属于已知 GPT-5/Codex 族时才做归一判定，避免
-	// normalizeCodexModel 的默认兜底把非 OpenAI 模型（claude-*、gemini-*、gpt-4o）
-	// 误识别为 gpt-5.4。
-	return isOpenAIGPT54ModelNormalized(normalizeKnownOpenAICodexModel(model))
-}
-
 func isOpenAIGPT54ModelNormalized(normalized string) bool {
 	return normalized == "gpt-5.4" || normalized == "gpt-5.5"
 }
